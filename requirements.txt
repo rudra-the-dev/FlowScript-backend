@@ -1,0 +1,6 @@
+flask
+gunicorn
+requests
+easyocr
+numpy
+Pillow
