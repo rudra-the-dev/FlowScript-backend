@@ -1,38 +1,30 @@
 import base64
 import io
-import numpy as np
+import pytesseract
 from PIL import Image
-import easyocr
-
-reader = None
-
-def get_reader():
-    global reader
-    if reader is None:
-        reader = easyocr.Reader(['en'], gpu=False)
-    return reader
 
 def extract_text_elements(screenshot_b64):
     img_bytes = base64.b64decode(screenshot_b64)
     img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
-    img_np = np.array(img)
 
-    results = get_reader().readtext(img_np)
+    data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
 
     elements = []
-    for (bbox, text, confidence) in results:
-        if confidence < 0.4:
+    for i in range(len(data['text'])):
+        text = data['text'][i].strip()
+        conf = int(data['conf'][i])
+
+        if not text or conf < 40:
             continue
-        top_left = bbox[0]
-        bottom_right = bbox[2]
-        x = int((top_left[0] + bottom_right[0]) / 2)
-        y = int((top_left[1] + bottom_right[1]) / 2)
+
+        x = data['left'][i] + data['width'][i] // 2
+        y = data['top'][i] + data['height'][i] // 2
+
         elements.append({
-            "text": text.strip(),
+            "text": text,
             "x": x,
             "y": y,
-            "confidence": round(confidence, 2)
+            "confidence": round(conf / 100, 2)
         })
 
     return elements
-  
