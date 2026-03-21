@@ -1,6 +1,6 @@
 flask
 gunicorn
 requests
-easyocr
-numpy
+pytesseract
 Pillow
+numpy
