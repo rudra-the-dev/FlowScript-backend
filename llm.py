@@ -11,38 +11,77 @@ MODELS = [
     "google/gemini-2.5-flash",
 ]
 
-SYSTEM_PROMPT = """You are an Android phone controller.
-You are given a task and a list of text elements visible on the screen with their coordinates.
-Your job is to decide the next single action to take.
+SYSTEM_PROMPT = """You are an Android UI automation expert controlling a phone screen.
 
-Each element looks like: {"text": "Suphal", "x": 400, "y": 650}
-The x and y are the exact center coordinates of that text on screen.
+You receive:
+1. A screenshot with GREEN numbered boxes on clickable elements and RED boxes on non-clickable ones
+2. A JSON list of elements matching those box numbers
+3. The current goal and action history summary
 
-RULES:
-- Only ONE action at a time
-- Use the exact x and y from the elements list — never guess coordinates
-- If the target element is in the list, tap it
-- If not found, swipe up to reveal more content
-- If task is complete, say done
-- Always explain your reasoning
+Your job is to decide the next action.
 
-Reply ONLY with valid JSON, nothing else:
+STRICT RULES:
+- ONLY reference elements by their ID number from the JSON list
+- NEVER invent element IDs or coordinates
+- Keep your thought short — one or two sentences maximum
+- If confidence is below 50% on all actions, set needs_help to true
+- Always check if your action is helping the current goal
+
+OUTPUT FORMAT — return ONLY valid JSON, nothing else:
 {
-  "action": "tap" | "type" | "swipe_up" | "swipe_down" | "wait" | "done" | "error",
-  "x": 123,
-  "y": 456,
-  "text": "only if action is type",
-  "reason": "what you see and why"
-}"""
+  "thought": "one sentence about what you see and why",
+  "intent_check": "yes or no — is this action helping the goal?",
+  "actions": [
+    {"type": "TAP", "element_id": 3, "confidence": 0.91},
+    {"type": "TAP", "element_id": 5, "confidence": 0.62},
+    {"type": "SWIPE", "direction": "up", "confidence": 0.40}
+  ],
+  "needs_help": false,
+  "done": false
+}
+
+Action types: TAP(element_id), TYPE(element_id, text), SWIPE(direction: up/down/left/right), DONE
+If task is complete set done to true."""
 
 
-def ask_llm(task, elements, context):
+def summarize_history(history):
+    if not history:
+        return "No actions taken yet."
+    if len(history) <= 3:
+        return "\n".join(history)
+    return "\n".join(history[-3:])
+
+
+def ask_llm(goal, elements, history, overlay_b64):
+    history_summary = summarize_history(history)
     elements_str = json.dumps(elements, indent=2)
-    prompt = f"TASK: {task}\n\nCONTEXT: {context}\n\nELEMENTS ON SCREEN:\n{elements_str}\n\nWhat is the next action?"
+
+    prompt = f"""Goal: {goal}
+
+Progress summary:
+{history_summary}
+
+Current screen elements:
+{elements_str}
+
+Look at the numbered boxes on the screenshot and decide the next action."""
 
     last_error = None
     for model in MODELS:
         try:
+            messages = [{"role": "user", "content": []}]
+
+            if overlay_b64:
+                messages[0]["content"].append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{overlay_b64}"}
+                })
+
+            messages[0]["content"].append({
+                "type": "text",
+                "text": prompt
+            })
+
             response = requests.post(
                 OPENROUTER_URL,
                 headers={
@@ -53,12 +92,11 @@ def ask_llm(task, elements, context):
                 },
                 json={
                     "model": model,
-                    "max_tokens": 300,
+                    "max_tokens": 400,
                     "temperature": 0.1,
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt}
-                    ]
+                    ] + messages
                 },
                 timeout=30
             )
@@ -85,22 +123,21 @@ def ask_llm(task, elements, context):
                 raw = raw[start:end]
 
             result = json.loads(raw)
-            result.setdefault('action', 'error')
-            result.setdefault('x', 0)
-            result.setdefault('y', 0)
-            result.setdefault('text', '')
-            result.setdefault('reason', '')
             result['model_used'] = model
             return result
 
+        except json.JSONDecodeError:
+            last_error = "LLM returned invalid JSON"
+            continue
         except Exception as e:
             last_error = str(e)
             continue
 
     return {
-        "action": "error",
-        "x": 0, "y": 0, "text": "",
-        "reason": f"All models failed. Last error: {last_error}",
-        "model_used": "none"
+        "thought": "All models failed",
+        "actions": [],
+        "needs_help": True,
+        "done": False,
+        "model_used": "none",
+        "error": last_error
     }
-  
